@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SOLAS点検">
+<title>SOLAS 消火設備点検システム</title>
+
+<!-- 外部ライブラリ（初回アクセス時にiPhone内に完全キャッシュされます） -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; padding-top: env(safe-area-inset-top, 12px); background: #f0f4f8; color: #1a202c; }
+  .offline-badge { background: #2b6cb0; color: white; font-size: 0.75rem; padding: 6px 10px; border-radius: 6px; margin-bottom: 10px; text-align: center; font-weight: bold; }
+  .tab-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab-btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: bold; cursor: pointer; background: #cbd5e0; color: #4a5568; }
+  .tab-btn.active { background: #3182ce; color: white; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .card { background: white; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 5px rgba(0,0,0,0.08); }
+  h2 { font-size: 1.15rem; margin-top: 0; color: #2b6cb0; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }
+  button { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 1rem; font-weight: bold; cursor: pointer; margin-bottom: 8px; }
+  .btn-scan { background: #3182ce; color: white; }
+  .btn-save { background: #38a169; color: white; }
+  .btn-save:disabled { background: #cbd5e0; cursor: not-allowed; }
+  .btn-export { background: #6b46c1; color: white; }
+  .btn-qr { background: #d69e2e; color: white; }
+  .form-group { margin-bottom: 14px; }
+  label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; color: #4a5568; }
+  select, input { width: 100%; padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box; font-size: 0.95rem; background: #fff; }
+  input[readonly] { background: #edf2f7; color: #718096; font-weight: bold; }
+  #reader { width: 100%; margin-bottom: 12px; border-radius: 8px; overflow: hidden; display: none; }
+  .locked-overlay { opacity: 0.5; pointer-events: none; }
+  .status-banner { padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; font-weight: bold; margin-bottom: 12px; background: #fed7d7; color: #9b2c2c; }
+  .status-banner.unlocked { background: #c6f6d5; color: #22543d; }
+  #photo-preview { width: 100%; max-height: 200px; object-fit: contain; border-radius: 6px; display: none; margin-top: 8px; border: 1px solid #cbd5e0; }
+  .qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-top: 14px; }
+  .qr-item { border: 2px dashed #a0aec0; padding: 10px; text-align: center; background: #fff; border-radius: 6px; }
+  .qr-item canvas, .qr-item img { margin: 0 auto 6px; display: block; }
+  .qr-item-title { font-size: 0.85rem; font-weight: bold; color: #2d3748; word-break: break-all; }
+  .qr-item-sub { font-size: 0.7rem; color: #718096; }
+  @media print {
+    body { background: white; padding: 0; }
+    .offline-badge, .tab-bar, .card:not(#print-area-card), button, input, label, select, .status-banner { display: none !important; }
+    #print-area-card { box-shadow: none; padding: 0; }
+    .qr-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .qr-item { border: 1px solid #000; page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<div id="offline-status" class="offline-badge">📡 オフライン稼働プログラム準備完了（ホーム画面に追加して使用可能）</div>
+
+<div class="tab-bar">
+  <button id="tab-btn-inspect" class="tab-btn active" onclick="switchTab('inspect')">🔍 点検・記録モード</button>
+  <button id="tab-btn-generator" class="tab-btn" onclick="switchTab('generator')">🏷️ QRコード発行・印刷</button>
+</div>
+
+<!-- ==================== 【点検モード】 ==================== -->
+<div id="tab-inspect" class="tab-content active">
+  <div class="card">
+    <h2>1. 実地QRスキャン認証</h2>
+    <div id="lock-status" class="status-banner">🔒 未スキャン：消火器のQRコードをカメラで読み取ってください</div>
+    <button id="btn-toggle-scan" class="btn-scan" onclick="toggleScanner()">カメラを起動してQRをスキャン</button>
+    <div id="reader"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. SOLAS点検・証拠記録</h2>
+    <form id="inspection-form" class="locked-overlay">
+      <div class="form-group">
+        <label>消火器識別ID (QR自動入力・手入力不可)</label>
+        <input type="text" id="ext-id" readonly required placeholder="QRスキャン待機中...">
+      </div>
+
+      <div class="form-group">
+        <label>スキャン開始時刻 (自動刻印)</label>
+        <input type="text" id="scan-time" readonly>
+      </div>
+
+      <div class="form-group">
+        <label>① 配置状態・視認性 (Access & Visibility)</label>
+        <select id="chk-access">
+          <option value="PASS">良好 (Pass - 定位置・障害なし)</option>
+          <option value="FAIL">異常 (Fail - 障害物・位置相違)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>② 安全ピン・封印 (Safety Pin & Seal)</label>
+        <select id="chk-seal">
+          <option value="PASS">良好 (Pass - ピン固定・封印完全)</option>
+          <option value="FAIL">異常 (Fail - 封印破損・ピン抜け)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>③ 圧力ゲージ・充填状態 (Pressure / Charge)</label>
+        <select id="chk-pressure">
+          <option value="PASS">適正範囲内 (Pass - Green Zone)</option>
+          <option value="FAIL">圧力異常 (Fail - 低圧/過圧)</option>
+          <option value="N/A">対象外 (N/A - CO2等の加圧式)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>④ 容器・ホース・ノズル外観 (Body & Hose)</label>
+        <select id="chk-body">
+          <option value="PASS">良好 (Pass - 腐食・損傷なし)</option>
+          <option value="FAIL">異常 (Fail - 腐食・亀裂・詰まり)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>⑤ 【必須】現物エビデンス撮影 (圧力計または封印部)</label>
+        <input type="file" id="camera-input" accept="image/*" capture="environment" onchange="processPhoto(event)" required>
+        <canvas id="watermark-canvas" style="display:none;"></canvas>
+        <img id="photo-preview" alt="証拠写真プレビュー">
+      </div>
+
+      <div class="form-group">
+        <label>特記事項・交換部品等 (Remarks)</label>
+        <input type="text" id="chk-remarks" placeholder="異常時は詳細を記入">
+      </div>
+
+      <div class="form-group">
+        <label>点検者氏名・職位 (Inspector)</label>
+        <input type="text" id="chk-inspector" placeholder="例: 3/O Suzuki" required>
+      </div>
+
+      <button type="submit" id="btn-submit" class="btn-save" disabled>証拠写真と点検記録を確定・保存</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>3. 監査用データ抽出 (PC連携)</h2>
+    <p style="font-size: 0.85rem; color: #4a5568;">端末内保存件数: <strong id="record-count">0</strong> 件</p>
+    <button class="btn-export" onclick="exportToExcel()">監査証跡付きExcel (.xlsx) を出力</button>
+    <button style="background: #e53e3e; color: white; margin-top: 8px;" onclick="clearRecords()">端末内データの全消去</button>
+  </div>
+</div>
+
+<!-- ==================== 【QRコード発行モード】 ==================== -->
+<div id="tab-generator" class="tab-content">
+  <div class="card">
+    <h2>消火器用 QRコード ラベル生成</h2>
+    <div class="form-group">
+      <label>発行モード</label>
+      <select id="qr-gen-mode" onchange="toggleQrInputs()">
+        <option value="single">単一ID指定発行 (破損時の再印刷など)</option>
+        <option value="batch">連番一括発行 (船内一斉配備用)</option>
+      </select>
+    </div>
+
+    <div id="qr-input-single" class="form-group">
+      <label>消火器識別ID</label>
+      <input type="text" id="qr-single-id" placeholder="例: EXT-BRIDGE-01">
+    </div>
+
+    <div id="qr-input-batch" style="display:none;">
+      <div class="form-group">
+        <label>接頭辞 (プレフィックス)</label>
+        <input type="text" id="qr-batch-prefix" value="EXT-ER-">
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div class="form-group" style="flex: 1;">
+          <label>開始番号</label>
+          <input type="number" id="qr-batch-start" value="1">
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label>終了番号</label>
+          <input type="number" id="qr-batch-end" value="20">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>補足ラベル（設置場所・区画など）</label>
+      <input type="text" id="qr-label-sub" placeholder="例: WHEELHOUSE / ENGINE ROOM">
+    </div>
+
+    <button class="btn-qr" onclick="generateQRCodes()">QRコードを生成する</button>
+  </div>
+
+  <div id="print-area-card" class="card">
+    <h2>発行プレビュー & 印刷</h2>
+    <button class="btn-scan" onclick="window.print()">🖨️ A4ラベルシートを印刷 / PDF保存</button>
+    <div id="qr-output-grid" class="qr-grid">
+      <p style="color: #718096; font-size: 0.85rem; grid-column: 1 / -1; text-align: center;">「QRコードを生成する」を押すとここに一覧表示されます。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  // オフライン完全動作のためのService Worker自動登録（単一ファイル完結型）
+  if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+    const swCode = `
+      const CACHE_NAME = 'solas-app-v1';
+      const ASSETS = [
+        location.href,
+        'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
+        'https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js',
+        'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'
+      ];
+      self.addEventListener('install', e => {
+        e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
+        self.skipWaiting();
+      });
+      self.addEventListener('fetch', e => {
+        e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+      });
+    `;
+    const blob = new Blob([swCode], { type: 'application/javascript' });
+    navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(() => {});
+  }
+
+  let html5QrcodeScanner = null;
+  let scanStartTimestamp = null;
+  let currentWatermarkedImageData = null;
+  let currentPhotoFileName = "";
+  const STORAGE_KEY = "SOLAS_VERIFIED_RECORDS";
+
+  function switchTab(tab) {
+    document.getElementById("tab-inspect").classList.remove("active");
+    document.getElementById("tab-generator").classList.remove("active");
+    document.getElementById("tab-btn-inspect").classList.remove("active");
+    document.getElementById("tab-btn-generator").classList.remove("active");
+
+    if (tab === 'inspect') {
+      document.getElementById("tab-inspect").classList.add("active");
+      document.getElementById("tab-btn-inspect").classList.add("active");
+    } else {
+      document.getElementById("tab-generator").classList.add("active");
+      document.getElementById("tab-btn-generator").classList.add("active");
+      stopScanner();
+    }
+  }
+
+  function toggleQrInputs() {
+    const mode = document.getElementById("qr-gen-mode").value;
+    document.getElementById("qr-input-single").style.display = (mode === 'single') ? 'block' : 'none';
+    document.getElementById("qr-input-batch").style.display = (mode === 'batch') ? 'block' : 'none';
+  }
+
+  function generateQRCodes() {
+    const grid = document.getElementById("qr-output-grid");
+    grid.innerHTML = "";
+    const mode = document.getElementById("qr-gen-mode").value;
+    const subText = document.getElementById("qr-label-sub").value.trim();
+    let idList = [];
+
+    if (mode === 'single') {
+      const singleId = document.getElementById("qr-single-id").value.trim();
+      if (!singleId) { alert("消火器IDを入力してください。"); return; }
+      idList.push(singleId);
+    } else {
+      const prefix = document.getElementById("qr-batch-prefix").value.trim();
+      const start = parseInt(document.getElementById("qr-batch-start").value);
+      const end = parseInt(document.getElementById("qr-batch-end").value);
+      if (isNaN(start) || isNaN(end) || start > end) {
+        alert("開始・終了番号を正しく入力してください。");
+        return;
+      }
+      for (let i = start; i <= end; i++) {
+        idList.push(`${prefix}${String(i).padStart(2, '0')}`);
+      }
+    }
+
+    idList.forEach(id => {
+      const item = document.createElement("div");
+      item.className = "qr-item";
+      const qrContainer = document.createElement("div");
+      new QRCode(qrContainer, { text: id, width: 110, height: 110, correctLevel: QRCode.CorrectLevel.M });
+
+      const title = document.createElement("div");
+      title.className = "qr-item-title";
+      title.innerText = id;
+
+      const sub = document.createElement("div");
+      sub.className = "qr-item-sub";
+      sub.innerText = subText || "SOLAS II-2/14";
+
+      item.appendChild(qrContainer);
+      item.appendChild(title);
+      item.appendChild(sub);
+      grid.appendChild(item);
+    });
+  }
+
+  function updateCount() {
+    const records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    document.getElementById("record-count").innerText = records.length;
+  }
+
+  function generateIntegrityHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return "SIG-" + Math.abs(hash).toString(16).toUpperCase().padStart(8, '0');
+  }
+
+  function toggleScanner() {
+    const readerDiv = document.getElementById("reader");
+    if (readerDiv.style.display === "block") {
+      stopScanner();
+    } else {
+      readerDiv.style.display = "block";
+      html5QrcodeScanner = new Html5Qrcode("reader");
+      html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        (decodedText) => {
+          unlockForm(decodedText);
+          stopScanner();
+        },
+        (err) => {}
+      ).catch(err => {
+        alert("カメラの起動に失敗しました。Safariのカメラ権限を許可してください。");
+        readerDiv.style.display = "none";
+      });
+    }
+  }
+
+  function stopScanner() {
+    if (html5QrcodeScanner) {
+      html5QrcodeScanner.stop().then(() => {
+        document.getElementById("reader").style.display = "none";
+      });
+    }
+  }
+
+  function unlockForm(qrValue) {
+    scanStartTimestamp = new Date();
+    document.getElementById("ext-id").value = qrValue;
+    document.getElementById("scan-time").value = scanStartTimestamp.toLocaleString('ja-JP');
+    document.getElementById("inspection-form").classList.remove("locked-overlay");
+    const banner = document.getElementById("lock-status");
+    banner.className = "status-banner unlocked";
+    banner.innerText = "✅ 実地スキャン認証済：点検と写真撮影を行ってください";
+  }
+
+  function processPhoto(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const extId = document.getElementById("ext-id").value;
+    if (!extId) {
+      alert("先にQRコードをスキャンしてください。");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const img = new Image();
+      img.onload = function() {
+        const canvas = document.getElementById("watermark-canvas");
+        const ctx = canvas.getContext("2d");
+        const scale = Math.min(800 / img.width, 800 / img.height, 1);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const nowStr = new Date().toLocaleString('ja-JP');
+        ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+        ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+        ctx.fillStyle = "#00ff88";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText(`SOLAS VERIFIED | ID: ${extId}`, 10, canvas.height - 28);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "14px sans-serif";
+        ctx.fillText(`TIMESTAMP: ${nowStr}`, 10, canvas.height - 8);
+
+        currentWatermarkedImageData = canvas.toDataURL("image/jpeg", 0.85);
+        currentPhotoFileName = `EVIDENCE_${extId.replace(/[^a-zA-Z0-9_-]/g, '')}_${Date.now()}.jpg`;
+
+        const preview = document.getElementById("photo-preview");
+        preview.src = currentWatermarkedImageData;
+        preview.style.display = "block";
+        document.getElementById("btn-submit").disabled = false;
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById("inspection-form").addEventListener("submit", function(e) {
+    e.preventDefault();
+    if (!scanStartTimestamp || !currentWatermarkedImageData) {
+      alert("QRスキャンおよび証拠写真の撮影が完了していません。");
+      return;
+    }
+
+    const saveTimestamp = new Date();
+    const durationSec = Math.round((saveTimestamp - scanStartTimestamp) / 1000);
+    const extId = document.getElementById("ext-id").value;
+    const inspector = document.getElementById("chk-inspector").value;
+    const access = document.getElementById("chk-access").value;
+    const seal = document.getElementById("chk-seal").value;
+    const pressure = document.getElementById("chk-pressure").value;
+    const body = document.getElementById("chk-body").value;
+
+    const rawString = `${extId}|${scanStartTimestamp.toISOString()}|${saveTimestamp.toISOString()}|${access}|${seal}|${pressure}|${body}|${inspector}|SOLAS_SALT_2026`;
+    const integrityHash = generateIntegrityHash(rawString);
+
+    const newRecord = {
+      Extinguisher_ID: extId,
+      Scan_Time: scanStartTimestamp.toLocaleString('ja-JP'),
+      Complete_Time: saveTimestamp.toLocaleString('ja-JP'),
+      Inspection_Duration_Sec: durationSec,
+      Access_Visibility: access,
+      Safety_Pin_Seal: seal,
+      Pressure_Gauge: pressure,
+      Body_Hose_Condition: body,
+      Remarks: document.getElementById("chk-remarks").value || "None",
+      Inspector: inspector,
+      Evidence_Photo_File: currentPhotoFileName,
+      Audit_Signature: integrityHash
+    };
+
+    const records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    records.push(newRecord);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+
+    const link = document.createElement('a');
+    link.download = currentPhotoFileName;
+    link.href = currentWatermarkedImageData;
+    link.click();
+
+    alert(`点検記録と証拠写真(${currentPhotoFileName})を保存しました。\n所要時間: ${durationSec}秒 / 署名: ${integrityHash}`);
+    resetAndLockForm();
+    updateCount();
+  });
+
+  function resetAndLockForm() {
+    scanStartTimestamp = null;
+    currentWatermarkedImageData = null;
+    document.getElementById("ext-id").value = "";
+    document.getElementById("scan-time").value = "";
+    document.getElementById("chk-remarks").value = "";
+    document.getElementById("camera-input").value = "";
+    document.getElementById("photo-preview").style.display = "none";
+    document.getElementById("btn-submit").disabled = true;
+    document.getElementById("inspection-form").classList.add("locked-overlay");
+    const banner = document.getElementById("lock-status");
+    banner.className = "status-banner";
+    banner.innerText = "🔒 未スキャン：次の消火器のQRコードを読み取ってください";
+  }
+
+  function exportToExcel() {
+    const records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    if (records.length === 0) {
+      alert("出力する点検データがありません。");
+      return;
+    }
+    const worksheet = XLSX.utils.json_to_sheet(records);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "SOLAS_Verified_Log");
+    const fileName = "SOLAS_Audit_Log_" + new Date().toISOString().substring(0, 10) + ".xlsx";
+    XLSX.writeFile(workbook, fileName);
+  }
+
+  function clearRecords() {
+    if (confirm("端末内の点検データを消去しますか？")) {
+      localStorage.removeItem(STORAGE_KEY);
+      updateCount();
+    }
+  }
+
+  window.onload = updateCount;
+</script>
+</body>
+</html>
